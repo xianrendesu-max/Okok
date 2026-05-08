@@ -1,0 +1,9 @@
+{
+  "name": "youtube-clone-backend",
+  "version": "1.0.0",
+  "main": "api/search.js",
+  "dependencies": {
+    "youtubei.js": "^12.2.0",
+    "cors": "^2.8.5"
+  }
+}
