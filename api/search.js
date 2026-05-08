@@ -6,11 +6,13 @@ const corsHandler = cors({
     methods: ['GET', 'OPTIONS'],
 });
 
-// 安全にテキストを取得するためのヘルパー
+// youtubei.js特有のRuns構造やオブジェクトから安全にテキストを抽出する
 const getText = (obj) => {
     if (!obj) return '';
     if (typeof obj === 'string') return obj;
-    return obj.text || obj.toString() || '';
+    if (obj.text) return obj.text;
+    if (Array.isArray(obj.runs)) return obj.runs.map(r => r.text).join('');
+    return obj.toString() || '';
 };
 
 module.exports = async (req, res) => {
@@ -34,7 +36,7 @@ module.exports = async (req, res) => {
             generate_session_locally: true
         });
 
-        // 1. 動画詳細リクエスト
+        // 1. 動画詳細リクエスト (再生ページ用)
         if (videoId) {
             const info = await yt.getInfo(videoId);
             
@@ -42,31 +44,32 @@ module.exports = async (req, res) => {
             const dash_url = info.streaming_data?.dash_manifest_url || null;
             const hls_url = info.streaming_data?.hls_manifest_url || null;
 
-            // B. コメント
+            // B. コメントの取得 (予備ルートを含めて探索)
             let comments = [];
             try {
                 const commentData = await info.getComments();
-                if (commentData && commentData.contents) {
-                    comments = commentData.contents.map(c => ({
-                        text: getText(c.content),
-                        author: c.author?.name || "匿名",
-                        authorIcon: c.author?.thumbnails?.[0]?.url || "",
-                        published: c.published_time?.text || c.published || "",
-                        likes: c.like_count || "0"
-                    }));
-                }
+                const contents = commentData.contents || [];
+                comments = contents.map(c => ({
+                    text: getText(c.content),
+                    author: c.author?.name || "匿名",
+                    authorIcon: c.author?.thumbnails?.[0]?.url || "",
+                    published: c.published_time?.text || "",
+                    likes: c.like_count || "0"
+                })).filter(c => c.text !== "");
             } catch (ce) {
                 console.log("Comments not available");
             }
 
-            // C. 関連動画
-            const related = info.watch_next_feed?.results?.map(v => {
-                if (!v.id) return null;
+            // C. 関連動画の取得 (複数のデータパスをチェック)
+            const relatedResults = info.watch_next_feed?.results || info.related_videos || [];
+            const related = relatedResults.map(v => {
+                const id = v.id || v.video_id;
+                if (!id) return null;
                 return {
-                    id: v.id,
+                    id: id,
                     title: getText(v.title),
-                    author: v.author?.name || getText(v.author),
-                    thumbnail: v.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`,
+                    author: v.author?.name || getText(v.author) || "Unknown",
+                    thumbnail: v.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
                     views: v.view_count?.text || v.short_view_count?.text || ""
                 };
             }).filter(v => v !== null) || [];
@@ -81,20 +84,23 @@ module.exports = async (req, res) => {
 
             return res.status(200).json({
                 id: videoId,
-                title: info.basic_info.title,
+                title: getText(info.basic_info.title),
                 description: info.basic_info.short_description,
                 author: channelInfo.name,
                 subscribers: channelInfo.subscribers,
                 channelIcon: channelInfo.thumbnails[0]?.url || "",
                 comments: comments.slice(0, 30),
                 related: related.slice(0, 20),
-                streaming: { dash: dash_url, hls: hls_url }
+                streaming: {
+                    dash: dash_url,
+                    hls: hls_url
+                }
             });
         }
 
-        // 2. 検索リクエスト
+        // 2. 通常の検索リクエスト
         if (!q) {
-            return res.status(400).json({ error: 'Query required' });
+            return res.status(400).json({ error: 'Query parameter "q" or "videoId" required' });
         }
 
         const searchResults = await yt.search(q, { type: 'video' });
@@ -116,6 +122,9 @@ module.exports = async (req, res) => {
 
     } catch (error) {
         console.error('API Error:', error);
-        res.status(500).json({ error: 'Internal Error', details: error.message });
+        res.status(500).json({ 
+            error: 'Internal Server Error', 
+            details: error.message 
+        });
     }
 };
